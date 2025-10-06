@@ -1,25 +1,13 @@
 pipeline {
     agent any
     
-    environment {
-        KUBECONFIG = credentials('kubeconfig')
-    }
-    
     stages {
-        stage('Validate YAML Files') {
+        stage('Setup Kubernetes') {
             steps {
                 script {
-                    def yamlFiles = [
-                        'mysql-secret.yaml',
-                        'mysql-configmap.yaml', 
-                        'mysql-pvc.yaml',
-                        'mysql-deployment.yaml',
-                        'mysql-service.yaml'
-                    ]
-                    
-                    yamlFiles.each { file ->
-                        sh "kubectl apply --dry-run=client -f ${file}"
-                        echo "✅ ${file} - Validación exitosa"
+                    // Usar el kubectl de minikube automáticamente
+                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
+                        sh 'minikube kubectl -- version --client'
                     }
                 }
             }
@@ -28,15 +16,15 @@ pipeline {
         stage('Deploy MySQL') {
             steps {
                 script {
-                    withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
+                        echo 'Desplegando MySQL en Kubernetes...'
+                        
                         sh '''
-                            kubectl apply -f mysql-secret.yaml
-                            kubectl apply -f mysql-configmap.yaml
-                            sleep 5
-                            kubectl apply -f mysql-pvc.yaml
-                            sleep 5
-                            kubectl apply -f mysql-deployment.yaml
-                            kubectl apply -f mysql-service.yaml
+                            minikube kubectl -- apply -f mysql-secret.yaml
+                            minikube kubectl -- apply -f mysql-configmap.yaml
+                            minikube kubectl -- apply -f mysql-pvc.yaml
+                            minikube kubectl -- apply -f mysql-deployment.yaml
+                            minikube kubectl -- apply -f mysql-service.yaml
                         '''
                     }
                 }
@@ -46,36 +34,32 @@ pipeline {
         stage('Verify Deployment') {
             steps {
                 script {
-                    timeout(time: 10, unit: 'MINUTES') {
-                        waitUntil {
-                            try {
-                                def podStatus = sh(
-                                    script: 'kubectl get pod -l app=mysql -o jsonpath="{.items[0].status.phase}"',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                def readyContainers = sh(
-                                    script: 'kubectl get pod -l app=mysql -o jsonpath="{.items[0].status.containerStatuses[0].ready}"',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                return podStatus == "Running" && readyContainers == "true"
-                            } catch (Exception e) {
-                                echo "Esperando que el pod esté listo..."
-                                return false
+                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
+                        timeout(time: 5, unit: 'MINUTES') {
+                            waitUntil {
+                                try {
+                                    def status = sh(
+                                        script: 'minikube kubectl -- get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
+                                        returnStdout: true
+                                    ).trim()
+                                    echo "Estado del pod: ${status}"
+                                    return status == "Running"
+                                } catch (Exception e) {
+                                    echo "Esperando que el pod esté listo..."
+                                    return false
+                                }
                             }
                         }
+                        
+                        sh '''
+                            echo "=== Pods ==="
+                            minikube kubectl -- get pods -l app=mysql
+                            echo "=== Services ==="
+                            minikube kubectl -- get svc mysql-service
+                            echo "=== PVCs ==="
+                            minikube kubectl -- get pvc
+                        '''
                     }
-                    
-                    // Verificaciones finales
-                    sh '''
-                        echo "=== Pods ==="
-                        kubectl get pods -l app=mysql
-                        echo "=== Services ==="
-                        kubectl get svc mysql-service
-                        echo "=== PVCs ==="
-                        kubectl get pvc
-                    '''
                 }
             }
         }
