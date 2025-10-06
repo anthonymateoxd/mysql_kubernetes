@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent any  // Esto provee el contexto 'node' necesario
     
     environment {
         KUBECONFIG = credentials('kubeconfig')
@@ -63,11 +63,15 @@ pipeline {
         }
         always {
             script {
+                echo "Pipeline completado - limpiando archivos temporales"
                 // Limpiar archivos de backup
                 sh '''
                     rm -f mysql-deployment-backup.yaml mysql-config-backup.yaml || true
                 '''
             }
+        }
+        success {
+            echo "✅ Despliegue de MySQL completado exitosamente"
         }
     }
 }
