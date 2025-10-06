@@ -1,85 +1,73 @@
 pipeline {
     agent any
     
-    parameters {
-        choice(
-            name: 'ACTION',
-            choices: ['apply', 'delete'],
-            description: 'Acción a realizar en Kubernetes'
-        )
-        string(
-            name: 'NAMESPACE',
-            defaultValue: 'default',
-            description: 'Namespace de Kubernetes'
-        )
-    }
-    
     environment {
         KUBECONFIG = credentials('kubeconfig')
     }
     
     stages {
-        stage('Deploy/Delete MySQL') {
+        stage('Backup Current Deployment') {
             steps {
                 script {
-                    echo "Ejecutando acción: ${params.ACTION} en namespace: ${params.NAMESPACE}"
-                    
-                    // Aplicar o eliminar recursos
-                    if (params.ACTION == 'apply') {
-                        deployMySQL(params.NAMESPACE)
-                    } else {
-                        deleteMySQL(params.NAMESPACE)
+                    // Hacer backup de la configuración actual
+                    sh '''
+                        kubectl get deployment mysql-deployment -o yaml > mysql-deployment-backup.yaml || true
+                        kubectl get configmap mysql-config -o yaml > mysql-config-backup.yaml || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy MySQL') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                            kubectl apply -f mysql-secret.yaml
+                            kubectl apply -f mysql-configmap.yaml
+                            kubectl apply -f mysql-pvc.yaml
+                            kubectl apply -f mysql-deployment.yaml
+                            kubectl apply -f mysql-service.yaml
+                        '''
+                    } catch (Exception e) {
+                        echo "Error en el despliegue: ${e.message}"
+                        currentBuild.result = 'FAILURE'
+                        error "Despliegue fallido"
                     }
                 }
             }
         }
         
-        stage('Verification') {
-            when {
-                expression { params.ACTION == 'apply' }
-            }
+        stage('Health Check with Retry') {
             steps {
                 script {
-                    verifyDeployment(params.NAMESPACE)
+                    retry(3) {
+                        sh '''
+                            kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
+                        '''
+                    }
                 }
             }
         }
     }
-}
-
-// Funciones definidas
-def deployMySQL(String namespace) {
-    sh """
-        kubectl apply -f mysql-secret.yaml -n ${namespace}
-        kubectl apply -f mysql-configmap.yaml -n ${namespace}
-        kubectl apply -f mysql-pvc.yaml -n ${namespace}
-        kubectl apply -f mysql-deployment.yaml -n ${namespace}
-        kubectl apply -f mysql-service.yaml -n ${namespace}
-    """
-}
-
-def deleteMySQL(String namespace) {
-    sh """
-        kubectl delete -f mysql-service.yaml -n ${namespace} --ignore-not-found=true
-        kubectl delete -f mysql-deployment.yaml -n ${namespace} --ignore-not-found=true
-        kubectl delete -f mysql-pvc.yaml -n ${namespace} --ignore-not-found=true
-        kubectl delete -f mysql-configmap.yaml -n ${namespace} --ignore-not-found=true
-        kubectl delete -f mysql-secret.yaml -n ${namespace} --ignore-not-found=true
-    """
-}
-
-def verifyDeployment(String namespace) {
-    sh """
-        echo "=== Estado de los Pods ==="
-        kubectl get pods -l app=mysql -n ${namespace}
-        
-        echo "=== Estado de los Services ==="
-        kubectl get svc mysql-service -n ${namespace}
-        
-        echo "=== Estado de los PVCs ==="
-        kubectl get pvc -n ${namespace}
-        
-        # Esperar a que el pod esté listo
-        kubectl wait --for=condition=ready pod -l app=mysql -n ${namespace} --timeout=300s
-    """
+    
+    post {
+        failure {
+            script {
+                echo "⚠️  Despliegue fallido - realizando rollback automático"
+                sh '''
+                    kubectl delete -f mysql-deployment.yaml --ignore-not-found=true
+                    kubectl apply -f mysql-deployment-backup.yaml --ignore-not-found=true
+                '''
+            }
+        }
+        always {
+            script {
+                // Limpiar archivos de backup
+                sh '''
+                    rm -f mysql-deployment-backup.yaml mysql-config-backup.yaml || true
+                '''
+            }
+        }
+    }
 }
