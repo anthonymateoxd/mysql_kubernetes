@@ -1,0 +1,54 @@
+pipeline {
+    agent any
+
+    environment {
+        KUBE_NAMESPACE = "default"   // Cambia si usas un namespace distinto
+    }
+
+    stages {
+        stage('Deploy MySQL on Kubernetes') {
+            steps {
+                echo "🚀 Iniciando despliegue de MySQL en Kubernetes..."
+
+                // Aplicar los manifiestos uno por uno
+                bat """
+                    echo 📦 Aplicando ConfigMap...
+                    kubectl apply -f mysql-configmap.yaml -n %KUBE_NAMESPACE%
+
+                    echo 🔐 Aplicando Secret...
+                    kubectl apply -f mysql-secret.yaml -n %KUBE_NAMESPACE%
+
+                    echo 💾 Aplicando PersistentVolumeClaim...
+                    kubectl apply -f mysql-pvc.yaml -n %KUBE_NAMESPACE%
+
+                    echo 🧱 Aplicando Deployment...
+                    kubectl apply -f mysql-deployment.yaml -n %KUBE_NAMESPACE%
+
+                    echo 🌐 Aplicando Service...
+                    kubectl apply -f mysql-service.yaml -n %KUBE_NAMESPACE%
+                """
+            }
+        }
+
+        stage('Verificar Despliegue') {
+            steps {
+                echo "🔍 Verificando estado de los pods..."
+                bat """
+                    kubectl get pods -n %KUBE_NAMESPACE%
+                    echo.
+                    echo Esperando a que el pod de MySQL esté corriendo...
+                    kubectl rollout status deployment/mysql-deployment -n %KUBE_NAMESPACE%
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ MySQL desplegado correctamente en Kubernetes"
+        }
+        failure {
+            echo "❌ Error durante el despliegue de MySQL"
+        }
+    }
+}
