@@ -1,59 +1,85 @@
 pipeline {
     agent any
     
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['apply', 'delete'],
+            description: 'Acción a realizar en Kubernetes'
+        )
+        string(
+            name: 'NAMESPACE',
+            defaultValue: 'default',
+            description: 'Namespace de Kubernetes'
+        )
+    }
+    
     environment {
-        KUBECONFIG = credentials('kubeconfig') // Configura esto en Jenkins
+        KUBECONFIG = credentials('kubeconfig')
     }
     
     stages {
-        stage('Deploy MySQL Resources') {
+        stage('Deploy/Delete MySQL') {
             steps {
                 script {
-                    echo 'Desplegando MySQL en Kubernetes...'
+                    echo "Ejecutando acción: ${params.ACTION} en namespace: ${params.NAMESPACE}"
                     
-                    // Aplicar todos los archivos YAML en orden
-                    sh 'kubectl apply -f mysql-secret.yaml'
-                    sh 'kubectl apply -f mysql-configmap.yaml' 
-                    sh 'kubectl apply -f mysql-pvc.yaml'
-                    sh 'kubectl apply -f mysql-deployment.yaml'
-                    sh 'kubectl apply -f mysql-service.yaml'
+                    // Aplicar o eliminar recursos
+                    if (params.ACTION == 'apply') {
+                        deployMySQL(params.NAMESPACE)
+                    } else {
+                        deleteMySQL(params.NAMESPACE)
+                    }
                 }
             }
         }
         
-        stage('Verificar Despliegue') {
+        stage('Verification') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
             steps {
                 script {
-                    echo 'Verificando el estado del despliegue...'
-                    sh 'kubectl get pods -l app=mysql'
-                    sh 'kubectl get svc mysql-service'
-                    sh 'kubectl get pvc'
+                    verifyDeployment(params.NAMESPACE)
                 }
             }
         }
+    }
+}
+
+// Funciones definidas
+def deployMySQL(String namespace) {
+    sh """
+        kubectl apply -f mysql-secret.yaml -n ${namespace}
+        kubectl apply -f mysql-configmap.yaml -n ${namespace}
+        kubectl apply -f mysql-pvc.yaml -n ${namespace}
+        kubectl apply -f mysql-deployment.yaml -n ${namespace}
+        kubectl apply -f mysql-service.yaml -n ${namespace}
+    """
+}
+
+def deleteMySQL(String namespace) {
+    sh """
+        kubectl delete -f mysql-service.yaml -n ${namespace} --ignore-not-found=true
+        kubectl delete -f mysql-deployment.yaml -n ${namespace} --ignore-not-found=true
+        kubectl delete -f mysql-pvc.yaml -n ${namespace} --ignore-not-found=true
+        kubectl delete -f mysql-configmap.yaml -n ${namespace} --ignore-not-found=true
+        kubectl delete -f mysql-secret.yaml -n ${namespace} --ignore-not-found=true
+    """
+}
+
+def verifyDeployment(String namespace) {
+    sh """
+        echo "=== Estado de los Pods ==="
+        kubectl get pods -l app=mysql -n ${namespace}
         
-        stage('Health Check') {
-            steps {
-                script {
-                    // Esperar a que el pod esté listo
-                    sh '''
-                        kubectl wait --for=condition=ready pod -l app=mysql --timeout=300s
-                    '''
-                    echo 'MySQL desplegado exitosamente!'
-                }
-            }
-        }
-    }
-    
-    post {
-        always {
-            echo 'Pipeline completado - limpiando si es necesario'
-        }
-        success {
-            echo '✅ Despliegue de MySQL completado exitosamente'
-        }
-        failure {
-            echo '❌ Error en el despliegue de MySQL'
-        }
-    }
+        echo "=== Estado de los Services ==="
+        kubectl get svc mysql-service -n ${namespace}
+        
+        echo "=== Estado de los PVCs ==="
+        kubectl get pvc -n ${namespace}
+        
+        # Esperar a que el pod esté listo
+        kubectl wait --for=condition=ready pod -l app=mysql -n ${namespace} --timeout=300s
+    """
 }
