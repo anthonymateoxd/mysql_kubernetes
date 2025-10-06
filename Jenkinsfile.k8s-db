@@ -1,65 +1,86 @@
 pipeline {
     agent any
     
+    tools {
+        // Configura kubectl en Jenkins o usa el del sistema
+        kubectl 'kubectl' // Asegúrate de tener kubectl instalado en Jenkins
+    }
+    
+    environment {
+        // Apunta al cluster de minikube
+        KUBECONFIG = "${env.HOME}/.kube/config"
+    }
+    
     stages {
-        stage('Setup Kubernetes') {
+        stage('Check Cluster Access') {
             steps {
                 script {
-                    // Usar el kubectl de minikube automáticamente
-                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
-                        sh 'minikube kubectl -- version --client'
-                    }
+                    sh 'kubectl cluster-info'
+                    sh 'kubectl get nodes'
                 }
             }
         }
         
-        stage('Deploy MySQL') {
+        stage('Deploy MySQL Resources') {
             steps {
                 script {
-                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
-                        echo 'Desplegando MySQL en Kubernetes...'
-                        
-                        sh '''
-                            minikube kubectl -- apply -f mysql-secret.yaml
-                            minikube kubectl -- apply -f mysql-configmap.yaml
-                            minikube kubectl -- apply -f mysql-pvc.yaml
-                            minikube kubectl -- apply -f mysql-deployment.yaml
-                            minikube kubectl -- apply -f mysql-service.yaml
-                        '''
-                    }
+                    echo 'Aplicando configuración de MySQL...'
+                    
+                    sh '''
+                        kubectl apply -f mysql-secret.yaml
+                        kubectl apply -f mysql-configmap.yaml
+                        kubectl apply -f mysql-pvc.yaml
+                        kubectl apply -f mysql-deployment.yaml
+                        kubectl apply -f mysql-service.yaml
+                    '''
                 }
             }
         }
         
-        stage('Verify Deployment') {
+        stage('Wait for MySQL') {
             steps {
                 script {
-                    withEnv(['PATH+MINIKUBE=C:/Program Files/Docker/Docker/resources/bin']) {
-                        timeout(time: 5, unit: 'MINUTES') {
-                            waitUntil {
-                                try {
-                                    def status = sh(
-                                        script: 'minikube kubectl -- get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
-                                        returnStdout: true
-                                    ).trim()
-                                    echo "Estado del pod: ${status}"
-                                    return status == "Running"
-                                } catch (Exception e) {
-                                    echo "Esperando que el pod esté listo..."
-                                    return false
-                                }
+                    timeout(time: 10, unit: 'MINUTES') {
+                        waitUntil {
+                            try {
+                                def podName = sh(
+                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}"',
+                                    returnStdout: true
+                                ).trim()
+                                
+                                def status = sh(
+                                    script: "kubectl get pod ${podName} -o jsonpath='{.status.phase}'",
+                                    returnStdout: true
+                                ).trim()
+                                
+                                def ready = sh(
+                                    script: "kubectl get pod ${podName} -o jsonpath='{.status.containerStatuses[0].ready}'",
+                                    returnStdout: true
+                                ).trim()
+                                
+                                echo "Pod: ${podName}, Status: ${status}, Ready: ${ready}"
+                                return status == "Running" && ready == "true"
+                            } catch (Exception e) {
+                                echo "Esperando que MySQL esté listo..."
+                                sleep 10
+                                return false
                             }
                         }
-                        
-                        sh '''
-                            echo "=== Pods ==="
-                            minikube kubectl -- get pods -l app=mysql
-                            echo "=== Services ==="
-                            minikube kubectl -- get svc mysql-service
-                            echo "=== PVCs ==="
-                            minikube kubectl -- get pvc
-                        '''
                     }
+                }
+            }
+        }
+        
+        stage('Final Verification') {
+            steps {
+                script {
+                    sh '''
+                        echo "=== Estado final ==="
+                        kubectl get all -l app=mysql
+                        kubectl get pvc
+                        kubectl get configmap
+                        kubectl get secret
+                    '''
                 }
             }
         }
@@ -67,13 +88,14 @@ pipeline {
     
     post {
         always {
-            echo "Build Status: ${currentBuild.currentResult}"
+            echo "Pipeline ${currentBuild.result ?: 'SUCCESS'} - Completado"
         }
         success {
-            echo '🎉 Despliegue de MySQL completado con éxito!'
+            echo '✅ MySQL desplegado exitosamente en Minikube!'
         }
         failure {
-            echo '💥 El despliegue falló. Revisar logs para más detalles.'
+            echo '❌ Error en el despliegue'
+            sh 'kubectl get events --sort-by=.lastTimestamp | tail -10'
         }
     }
 }
