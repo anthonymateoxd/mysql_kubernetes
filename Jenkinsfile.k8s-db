@@ -6,10 +6,10 @@ pipeline {
                 script {
                     // Aplicar en el orden específico que necesitas
                     sh 'kubectl apply -f mysql-configmap.yaml'
-                    sh 'kubectl apply -f mysql-secret.yaml'
                     sh 'kubectl apply -f mysql-pvc.yaml'
-                    sh 'kubectl apply -f mysql-deployment.yaml'
+                    sh 'kubectl apply -f mysql-secret.yaml'
                     sh 'kubectl apply -f mysql-service.yaml'
+                    sh 'kubectl apply -f mysql-deployment.yaml'
                 }
             }
         }
