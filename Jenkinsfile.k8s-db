@@ -1,10 +1,13 @@
 pipeline {
     agent any
+    environment {
+        KUBECONFIG = credentials('k8s-credentials')
+    }
     stages {
-        stage('Verificar kubectl') {
+        stage('Verificar Conexión Kubernetes') {
             steps {
-                bat 'where kubectl || echo "kubectl no encontrado en PATH"'
-                bat 'kubectl version --client --short'
+                bat 'kubectl cluster-info'
+                bat 'kubectl get nodes'
             }
         }
         
@@ -12,33 +15,42 @@ pipeline {
             steps {
                 script {
                     try {
+                        echo "Aplicando ConfigMap..."
                         bat 'kubectl apply -f mysql-configmap.yaml'
+                        
+                        echo "Aplicando Secret..."
                         bat 'kubectl apply -f mysql-secret.yaml'
+                        
+                        echo "Aplicando PVC..."
                         bat 'kubectl apply -f mysql-pvc.yaml'
                         
-                        // Pequeña pausa para que el PVC se provisione
+                        // Esperar a que el PVC esté listo
                         bat 'timeout /t 10 /nobreak'
                         
+                        echo "Aplicando Deployment..."
                         bat 'kubectl apply -f mysql-deployment.yaml'
+                        
+                        echo "Aplicando Service..."
                         bat 'kubectl apply -f mysql-service.yaml'
+                        
                     } catch (Exception e) {
-                        error "Error aplicando manifiestos: ${e.message}"
+                        error "Error en el despliegue: ${e.message}"
                     }
                 }
             }
         }
         
-        stage('Verificar Estado del Despliegue') {
+        stage('Verificar Despliegue') {
             steps {
                 script {
-                    timeout(time: 5, unit: 'MINUTES') {
+                    timeout(time: 3, unit: 'MINUTES') {
                         waitUntil {
-                            def status = bat(
-                                script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
+                            def pods = bat(
+                                script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[*].status.phase}"',
                                 returnStdout: true
                             ).trim()
-                            echo "Estado del pod: ${status}"
-                            return status == "Running"
+                            echo "Estado de pods: ${pods}"
+                            return pods.contains("Running")
                         }
                     }
                 }
@@ -48,15 +60,17 @@ pipeline {
     
     post {
         always {
-            bat 'kubectl get pods -l app=mysql'
-            bat 'kubectl get svc mysql-service'
+            echo "=== Estado Final del Despliegue ==="
+            bat 'kubectl get pods -l app=mysql || echo "No se pueden obtener los pods"'
+            bat 'kubectl get svc mysql-service || echo "No se puede obtener el servicio"'
+            bat 'kubectl get pvc || echo "No se pueden obtener los PVCs"'
         }
         success {
             echo '✅ Despliegue completado exitosamente!'
         }
         failure {
             echo '❌ El despliegue falló'
-            bat 'kubectl describe pods -l app=mysql'
+            bat 'kubectl get events --sort-by=.lastTimestamp || echo "No se pueden obtener eventos"'
         }
     }
 }
