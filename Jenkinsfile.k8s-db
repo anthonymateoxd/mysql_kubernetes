@@ -1,46 +1,108 @@
 pipeline {
     agent any
     
+    environment {
+        // Ruta a kubectl en Windows
+        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;${env.PATH}"
+    }
+    
     stages {
-        stage('Deploy with Minikube') {
+        stage('Check Kubernetes Access') {
             steps {
                 script {
-                    echo 'Usando Minikube kubectl para el despliegue...'
-                    
-                    // Aplicar todos los recursos
-                    bat '''
-                        minikube kubectl -- apply -f mysql-secret.yaml
-                        minikube kubectl -- apply -f mysql-configmap.yaml
-                        minikube kubectl -- apply -f mysql-pvc.yaml
-                        minikube kubectl -- apply -f mysql-deployment.yaml
-                        minikube kubectl -- apply -f mysql-service.yaml
-                    '''
+                    // Verificar que tenemos acceso a Kubernetes
+                    bat 'kubectl cluster-info'
+                    bat 'kubectl get nodes'
+                    bat 'kubectl get namespaces'
                 }
             }
         }
         
-        stage('Verify with Minikube') {
+        stage('Deploy MySQL Resources') {
             steps {
                 script {
-                    timeout(time: 5, unit: 'MINUTES') {
+                    echo 'Desplegando recursos de MySQL...'
+                    
+                    // Aplicar los archivos YAML en orden
+                    bat 'kubectl apply -f mysql-secret.yaml'
+                    bat 'kubectl apply -f mysql-configmap.yaml'
+                    bat 'kubectl apply -f mysql-pvc.yaml'
+                    bat 'kubectl apply -f mysql-deployment.yaml'
+                    bat 'kubectl apply -f mysql-service.yaml'
+                }
+            }
+        }
+        
+        stage('Wait for MySQL to be Ready') {
+            steps {
+                script {
+                    echo 'Esperando a que MySQL esté listo...'
+                    
+                    timeout(time: 10, unit: 'MINUTES') {
                         waitUntil {
-                            def status = bat(
-                                script: 'minikube kubectl -- get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
-                                returnStdout: true
-                            ).trim()
-                            
-                            echo "Estado: ${status}"
-                            return status == "Running"
+                            try {
+                                // Verificar si hay pods de MySQL
+                                def pods = bat(
+                                    script: 'kubectl get pods -l app=mysql --no-headers | find /c /v ""',
+                                    returnStdout: true
+                                ).trim().toInteger()
+                                
+                                if (pods == 0) {
+                                    echo 'No hay pods de MySQL aún...'
+                                    sleep 10
+                                    return false
+                                }
+                                
+                                // Verificar estado del pod
+                                def status = bat(
+                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
+                                    returnStdout: true
+                                ).trim()
+                                
+                                def ready = bat(
+                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.containerStatuses[0].ready}"',
+                                    returnStdout: true
+                                ).trim()
+                                
+                                echo "Estado del pod: ${status}, Listo: ${ready}"
+                                
+                                if (status == "Running" && ready == "true") {
+                                    echo '✅ MySQL está listo!'
+                                    return true
+                                } else {
+                                    sleep 10
+                                    return false
+                                }
+                            } catch (Exception e) {
+                                echo "Error verificando estado: ${e.message}"
+                                sleep 10
+                                return false
+                            }
                         }
                     }
-                    
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo '=== Verificación final del despliegue ==='
                     bat '''
-                        echo Pods:
-                        minikube kubectl -- get pods -l app=mysql
-                        echo Services:
-                        minikube kubectl -- get svc mysql-service
-                        echo PVCs:
-                        minikube kubectl -- get pvc
+                        echo --- Pods de MySQL ---
+                        kubectl get pods -l app=mysql -o wide
+                        
+                        echo --- Services ---
+                        kubectl get svc -l app=mysql
+                        
+                        echo --- PVCs ---
+                        kubectl get pvc
+                        
+                        echo --- ConfigMaps ---
+                        kubectl get configmap
+                        
+                        echo --- Secrets ---
+                        kubectl get secret
                     '''
                 }
             }
@@ -48,11 +110,26 @@ pipeline {
     }
     
     post {
+        always {
+            echo "Pipeline ${currentBuild.currentResult} - Completado"
+        }
         success {
-            echo '✅ MySQL desplegado con Minikube!'
+            echo '🎉 Despliegue de MySQL completado exitosamente!'
         }
         failure {
-            echo '❌ Error en el despliegue con Minikube'
+            echo '❌ El despliegue falló. Revisar logs arriba.'
+            script {
+                // Mostrar logs de error
+                bat '''
+                    echo --- Últimos eventos ---
+                    kubectl get events --sort-by=.lastTimestamp | tail -5
+                    
+                    echo --- Logs del pod de MySQL (si existe) ---
+                    for /f "tokens=*" %%i in ('kubectl get pods -l app=mysql -o name') do (
+                        kubectl logs %%i --tail=50
+                    )
+                '''
+            }
         }
     }
 }
