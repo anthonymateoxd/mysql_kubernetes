@@ -1,28 +1,62 @@
 pipeline {
     agent any
     stages {
-        stage('ConfigMap y Secret') {
+        stage('Verificar kubectl') {
             steps {
-                bat 'kubectl apply -f mysql-configmap.yaml'
-                bat 'kubectl apply -f mysql-secret.yaml'
+                bat 'where kubectl || echo "kubectl no encontrado en PATH"'
+                bat 'kubectl version --client --short'
             }
         }
-        stage('Persistent Volume Claim') {
+        
+        stage('Aplicar Configuración MySQL') {
             steps {
-                bat 'kubectl apply -f mysql-pvc.yaml'
+                script {
+                    try {
+                        bat 'kubectl apply -f mysql-configmap.yaml'
+                        bat 'kubectl apply -f mysql-secret.yaml'
+                        bat 'kubectl apply -f mysql-pvc.yaml'
+                        
+                        // Pequeña pausa para que el PVC se provisione
+                        bat 'timeout /t 10 /nobreak'
+                        
+                        bat 'kubectl apply -f mysql-deployment.yaml'
+                        bat 'kubectl apply -f mysql-service.yaml'
+                    } catch (Exception e) {
+                        error "Error aplicando manifiestos: ${e.message}"
+                    }
+                }
             }
         }
-        stage('Deployment y Service') {
+        
+        stage('Verificar Estado del Despliegue') {
             steps {
-                bat 'kubectl apply -f mysql-deployment.yaml'
-                bat 'kubectl apply -f mysql-service.yaml'
+                script {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        waitUntil {
+                            def status = bat(
+                                script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
+                                returnStdout: true
+                            ).trim()
+                            echo "Estado del pod: ${status}"
+                            return status == "Running"
+                        }
+                    }
+                }
             }
         }
-        stage('Verificar Despliegue') {
-            steps {
-                bat 'kubectl get pods -l app=mysql'
-                bat 'kubectl get services mysql-service'
-            }
+    }
+    
+    post {
+        always {
+            bat 'kubectl get pods -l app=mysql'
+            bat 'kubectl get svc mysql-service'
+        }
+        success {
+            echo '✅ Despliegue completado exitosamente!'
+        }
+        failure {
+            echo '❌ El despliegue falló'
+            bat 'kubectl describe pods -l app=mysql'
         }
     }
 }
