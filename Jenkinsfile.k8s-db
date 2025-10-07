@@ -3,25 +3,25 @@ pipeline {
     stages {
         stage('ConfigMap y Secret') {
             steps {
-                sh 'kubectl apply -f mysql-configmap.yaml'
-                sh 'kubectl apply -f mysql-secret.yaml'
+                bat 'kubectl apply -f mysql-configmap.yaml'
+                bat 'kubectl apply -f mysql-secret.yaml'
             }
         }
         stage('Persistent Volume Claim') {
             steps {
-                sh 'kubectl apply -f mysql-pvc.yaml'
+                bat 'kubectl apply -f mysql-pvc.yaml'
             }
         }
         stage('Deployment y Service') {
             steps {
-                sh 'kubectl apply -f mysql-deployment.yaml'
-                sh 'kubectl apply -f mysql-service.yaml'
+                bat 'kubectl apply -f mysql-deployment.yaml'
+                bat 'kubectl apply -f mysql-service.yaml'
             }
         }
         stage('Verificar Despliegue') {
             steps {
-                sh 'kubectl get pods -l app=mysql'
-                sh 'kubectl get services mysql-service'
+                bat 'kubectl get pods -l app=mysql'
+                bat 'kubectl get services mysql-service'
             }
         }
     }
