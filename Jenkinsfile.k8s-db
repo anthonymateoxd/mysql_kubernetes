@@ -1,134 +1,16 @@
 pipeline {
     agent any
-    
-    environment {
-        // Ruta a kubectl en Windows
-        PATH = "C:\\Program Files\\Docker\\Docker\\resources\\bin;${env.PATH}"
-    }
-    
     stages {
-        stage('Check Kubernetes Access') {
+        stage('Aplicar Configuración MySQL') {
             steps {
                 script {
-                    // Verificar que tenemos acceso a Kubernetes
-                    bat 'kubectl cluster-info'
-                    bat 'kubectl get nodes'
-                    bat 'kubectl get namespaces'
+                    // Aplicar en el orden específico que necesitas
+                    sh 'kubectl apply -f mysql-configmap.yaml'
+                    sh 'kubectl apply -f mysql-secret.yaml'
+                    sh 'kubectl apply -f mysql-pvc.yaml'
+                    sh 'kubectl apply -f mysql-deployment.yaml'
+                    sh 'kubectl apply -f mysql-service.yaml'
                 }
-            }
-        }
-        
-        stage('Deploy MySQL Resources') {
-            steps {
-                script {
-                    echo 'Desplegando recursos de MySQL...'
-                    
-                    // Aplicar los archivos YAML en orden
-                    bat 'kubectl apply -f mysql-secret.yaml'
-                    bat 'kubectl apply -f mysql-configmap.yaml'
-                    bat 'kubectl apply -f mysql-pvc.yaml'
-                    bat 'kubectl apply -f mysql-deployment.yaml'
-                    bat 'kubectl apply -f mysql-service.yaml'
-                }
-            }
-        }
-        
-        stage('Wait for MySQL to be Ready') {
-            steps {
-                script {
-                    echo 'Esperando a que MySQL esté listo...'
-                    
-                    timeout(time: 10, unit: 'MINUTES') {
-                        waitUntil {
-                            try {
-                                // Verificar si hay pods de MySQL
-                                def pods = bat(
-                                    script: 'kubectl get pods -l app=mysql --no-headers | find /c /v ""',
-                                    returnStdout: true
-                                ).trim().toInteger()
-                                
-                                if (pods == 0) {
-                                    echo 'No hay pods de MySQL aún...'
-                                    sleep 10
-                                    return false
-                                }
-                                
-                                // Verificar estado del pod
-                                def status = bat(
-                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                def ready = bat(
-                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.containerStatuses[0].ready}"',
-                                    returnStdout: true
-                                ).trim()
-                                
-                                echo "Estado del pod: ${status}, Listo: ${ready}"
-                                
-                                if (status == "Running" && ready == "true") {
-                                    echo '✅ MySQL está listo!'
-                                    return true
-                                } else {
-                                    sleep 10
-                                    return false
-                                }
-                            } catch (Exception e) {
-                                echo "Error verificando estado: ${e.message}"
-                                sleep 10
-                                return false
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Verify Deployment') {
-            steps {
-                script {
-                    echo '=== Verificación final del despliegue ==='
-                    bat '''
-                        echo --- Pods de MySQL ---
-                        kubectl get pods -l app=mysql -o wide
-                        
-                        echo --- Services ---
-                        kubectl get svc -l app=mysql
-                        
-                        echo --- PVCs ---
-                        kubectl get pvc
-                        
-                        echo --- ConfigMaps ---
-                        kubectl get configmap
-                        
-                        echo --- Secrets ---
-                        kubectl get secret
-                    '''
-                }
-            }
-        }
-    }
-    
-    post {
-        always {
-            echo "Pipeline ${currentBuild.currentResult} - Completado"
-        }
-        success {
-            echo '🎉 Despliegue de MySQL completado exitosamente!'
-        }
-        failure {
-            echo '❌ El despliegue falló. Revisar logs arriba.'
-            script {
-                // Mostrar logs de error
-                bat '''
-                    echo --- Últimos eventos ---
-                    kubectl get events --sort-by=.lastTimestamp | tail -5
-                    
-                    echo --- Logs del pod de MySQL (si existe) ---
-                    for /f "tokens=*" %%i in ('kubectl get pods -l app=mysql -o name') do (
-                        kubectl logs %%i --tail=50
-                    )
-                '''
             }
         }
     }
