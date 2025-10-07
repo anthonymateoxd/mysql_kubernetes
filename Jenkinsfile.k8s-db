@@ -1,22 +1,19 @@
 pipeline {
     agent any
     
-    tools {
-        // Configura kubectl en Jenkins o usa el del sistema
-        kubectl 'kubectl' // Asegúrate de tener kubectl instalado en Jenkins
-    }
-    
     environment {
-        // Apunta al cluster de minikube
-        KUBECONFIG = "${env.HOME}/.kube/config"
+        // Usar el kubectl del sistema o el de Minikube
+        PATH = "C:/Program Files/Docker/Docker/resources/bin;${env.PATH}"
     }
     
     stages {
-        stage('Check Cluster Access') {
+        stage('Check Kubernetes Access') {
             steps {
                 script {
+                    // Verificar que tenemos acceso a Kubernetes
                     sh 'kubectl cluster-info'
                     sh 'kubectl get nodes'
+                    sh 'kubectl get namespaces'
                 }
             }
         }
@@ -24,44 +21,59 @@ pipeline {
         stage('Deploy MySQL Resources') {
             steps {
                 script {
-                    echo 'Aplicando configuración de MySQL...'
+                    echo 'Desplegando recursos de MySQL...'
                     
-                    sh '''
-                        kubectl apply -f mysql-secret.yaml
-                        kubectl apply -f mysql-configmap.yaml
-                        kubectl apply -f mysql-pvc.yaml
-                        kubectl apply -f mysql-deployment.yaml
-                        kubectl apply -f mysql-service.yaml
-                    '''
+                    // Aplicar los archivos YAML en orden
+                    sh 'kubectl apply -f mysql-secret.yaml'
+                    sh 'kubectl apply -f mysql-configmap.yaml'
+                    sh 'kubectl apply -f mysql-pvc.yaml'
+                    sh 'kubectl apply -f mysql-deployment.yaml'
+                    sh 'kubectl apply -f mysql-service.yaml'
                 }
             }
         }
         
-        stage('Wait for MySQL') {
+        stage('Wait for MySQL to be Ready') {
             steps {
                 script {
+                    echo 'Esperando a que MySQL esté listo...'
+                    
                     timeout(time: 10, unit: 'MINUTES') {
                         waitUntil {
                             try {
-                                def podName = sh(
-                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}"',
+                                // Verificar si hay pods de MySQL
+                                def pods = sh(
+                                    script: 'kubectl get pods -l app=mysql --no-headers | wc -l',
                                     returnStdout: true
-                                ).trim()
+                                ).trim().toInteger()
                                 
+                                if (pods == 0) {
+                                    echo 'No hay pods de MySQL aún...'
+                                    return false
+                                }
+                                
+                                // Verificar estado del pod
                                 def status = sh(
-                                    script: "kubectl get pod ${podName} -o jsonpath='{.status.phase}'",
+                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.phase}"',
                                     returnStdout: true
                                 ).trim()
                                 
                                 def ready = sh(
-                                    script: "kubectl get pod ${podName} -o jsonpath='{.status.containerStatuses[0].ready}'",
+                                    script: 'kubectl get pods -l app=mysql -o jsonpath="{.items[0].status.containerStatuses[0].ready}"',
                                     returnStdout: true
                                 ).trim()
                                 
-                                echo "Pod: ${podName}, Status: ${status}, Ready: ${ready}"
-                                return status == "Running" && ready == "true"
+                                echo "Estado del pod: ${status}, Listo: ${ready}"
+                                
+                                if (status == "Running" && ready == "true") {
+                                    echo '✅ MySQL está listo!'
+                                    return true
+                                } else {
+                                    sleep 10
+                                    return false
+                                }
                             } catch (Exception e) {
-                                echo "Esperando que MySQL esté listo..."
+                                echo "Error verificando estado: ${e.message}"
                                 sleep 10
                                 return false
                             }
@@ -71,14 +83,24 @@ pipeline {
             }
         }
         
-        stage('Final Verification') {
+        stage('Verify Deployment') {
             steps {
                 script {
+                    echo '=== Verificación final del despliegue ==='
                     sh '''
-                        echo "=== Estado final ==="
-                        kubectl get all -l app=mysql
+                        echo "--- Pods de MySQL ---"
+                        kubectl get pods -l app=mysql -o wide
+                        
+                        echo "--- Services ---"
+                        kubectl get svc -l app=mysql
+                        
+                        echo "--- PVCs ---"
                         kubectl get pvc
+                        
+                        echo "--- ConfigMaps ---"
                         kubectl get configmap
+                        
+                        echo "--- Secrets ---"
                         kubectl get secret
                     '''
                 }
@@ -88,14 +110,23 @@ pipeline {
     
     post {
         always {
-            echo "Pipeline ${currentBuild.result ?: 'SUCCESS'} - Completado"
+            echo "Pipeline ${currentBuild.currentResult} - Completado"
         }
         success {
-            echo '✅ MySQL desplegado exitosamente en Minikube!'
+            echo '🎉 Despliegue de MySQL completado exitosamente!'
         }
         failure {
-            echo '❌ Error en el despliegue'
-            sh 'kubectl get events --sort-by=.lastTimestamp | tail -10'
+            echo '❌ El despliegue falló. Revisar logs arriba.'
+            script {
+                // Mostrar logs de error
+                sh '''
+                    echo "--- Últimos eventos ---"
+                    kubectl get events --sort-by=.lastTimestamp | tail -5
+                    
+                    echo "--- Logs del pod de MySQL (si existe) ---"
+                    kubectl logs -l app=mysql --tail=50 || echo "No se pueden obtener logs"
+                '''
+            }
         }
     }
 }
