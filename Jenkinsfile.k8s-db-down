@@ -1,0 +1,51 @@
+pipeline {
+    agent any
+
+    environment {
+        KUBECONFIG = 'C:\\ProgramData\\Jenkins\\.kube\\config'
+    }
+
+
+    stages {
+        stage('Aplicar Configuración MySQL') {
+            steps {
+                script {
+                    echo '🚀 Iniciando despliegue de MySQL en Kubernetes...'
+
+                    bat 'echo 📦 Aplicando ConfigMap...'
+                    bat 'kubectl apply -f mysql-configmap.yaml --validate=false'
+
+                    bat 'echo 🔐 Aplicando Secret...'
+                    bat 'kubectl apply -f mysql-secret.yaml --validate=false'
+
+                    bat 'echo 💾 Aplicando PersistentVolumeClaim...'
+                    bat 'kubectl apply -f mysql-pvc.yaml --validate=false'
+
+                    bat 'echo 🧱 Aplicando Deployment...'
+                    bat 'kubectl apply -f mysql-deployment.yaml --validate=false'
+
+                    bat 'echo 🌐 Aplicando Service...'
+                    bat 'kubectl apply -f mysql-service.yaml --validate=false'
+                }
+            }
+        }
+
+        stage('Verificar Despliegue') {
+            steps {
+                script {
+                    echo '🔍 Verificando pods en ejecución...'
+                    bat 'kubectl get pods -n default'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Despliegue completado exitosamente.'
+        }
+        failure {
+            echo '❌ Error durante el despliegue de MySQL.'
+        }
+    }
+}
